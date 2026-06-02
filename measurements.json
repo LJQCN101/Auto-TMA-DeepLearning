@@ -1,0 +1,25 @@
+{
+	"measurements": [
+		{"time_seconds": 0, "ownship_x": 0, "ownship_y": 0, "bearing_deg": 1.0},
+		{"time_seconds": 30, "ownship_x": 0, "ownship_y": 10, "bearing_deg": 11.0},
+        {"time_seconds": 60, "ownship_x": 0, "ownship_y": 20, "bearing_deg": 21.0},
+        {"time_seconds": 90, "ownship_x": 100, "ownship_y": 10, "bearing_deg": 22.0},
+		{"time_seconds": 120, "ownship_x": 200, "ownship_y": 0, "bearing_deg": 23.0},
+		{"time_seconds": 150, "ownship_x": 300, "ownship_y": 10, "bearing_deg": 23.0},
+		{"time_seconds": 180, "ownship_x": 400, "ownship_y": 20, "bearing_deg": 24.0},
+		{"time_seconds": 210, "ownship_x": 500, "ownship_y": 30, "bearing_deg": 24.0},
+		{"time_seconds": 240, "ownship_x": 600, "ownship_y": 40, "bearing_deg": 25.0},
+		{"time_seconds": 270, "ownship_x": 700, "ownship_y": 40, "bearing_deg": 26.0},
+		{"time_seconds": 300, "ownship_x": 800, "ownship_y": 40, "bearing_deg": 27.0},
+		{"time_seconds": 330, "ownship_x": 900, "ownship_y": 40, "bearing_deg": 28.0},
+		{"time_seconds": 360, "ownship_x": 1000, "ownship_y": 30, "bearing_deg": 29.0},
+		{"time_seconds": 390, "ownship_x": 1100, "ownship_y": 20, "bearing_deg": 30.0},
+		{"time_seconds": 420, "ownship_x": 1200, "ownship_y": 10, "bearing_deg": 31.0},
+		{"time_seconds": 450, "ownship_x": 1300, "ownship_y": 0, "bearing_deg": 32.0},
+		{"time_seconds": 480, "ownship_x": 1400, "ownship_y": 0, "bearing_deg": 33.0},
+		{"time_seconds": 510, "ownship_x": 1500, "ownship_y": 0, "bearing_deg": 32.0},
+		{"time_seconds": 540, "ownship_x": 1600, "ownship_y": 10, "bearing_deg": 31.0},
+		{"time_seconds": 570, "ownship_x": 1700, "ownship_y": 20, "bearing_deg": 30.0},
+		{"time_seconds": 600, "ownship_x": 1800, "ownship_y": 30, "bearing_deg": 29.0}
+	]
+}

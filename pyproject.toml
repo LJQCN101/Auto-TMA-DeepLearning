@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auto-tma"
+version = "0.1.0"
+description = "Deep learning tools for bearing-only target motion analysis"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "opencv-python>=4.0",
+    "torch>=2.7",
+]
+
+[project.scripts]
+auto-tma-train-range-net = "auto_tma.deep_learning:main"
+auto-tma-predict = "auto_tma.predict:main"
+
+[tool.setuptools.packages.find]
+include = ["auto_tma*"]
