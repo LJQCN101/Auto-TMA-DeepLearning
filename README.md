@@ -1,4 +1,4 @@
-# Auto-TMA-opencv
+# Auto-TMA-DeepLearning
 
 Deep-learning bearing-only target motion analysis with synthetic training, checkpointed transformer regressors, and visualization for numeric or image-derived observations.
 
