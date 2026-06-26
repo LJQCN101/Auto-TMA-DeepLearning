@@ -22,9 +22,27 @@ def detect_candidate_lines(
     hough_threshold: int = 100,
     min_line_length: float = 100.0,
     max_line_gap: float = 50.0,
+    # Blue line support for game screenshots (e.g. Deep Contact blue bearing lines)
+    blue_mask: bool = False,
+    blue_hue_low: int = 95,
+    blue_hue_high: int = 140,
+    blue_sat_min: int = 55,
+    blue_val_min: int = 70,
 ) -> list[LineSegment]:
     if image.ndim == 3:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if blue_mask:
+            hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+            lower = np.array([blue_hue_low, blue_sat_min, blue_val_min], dtype=np.uint8)
+            upper = np.array([blue_hue_high, 255, 255], dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+            # Light dilation helps connect thin/anti-aliased blue lines
+            kernel = np.ones((2, 2), np.uint8)
+            mask = cv2.dilate(mask, kernel, iterations=1)
+            gray = cv2.bitwise_and(gray, gray, mask=mask)
+            # Softer Canny defaults for typical UI-drawn blue lines
+            if canny_threshold1 == 300.0 and canny_threshold2 == 350.0:
+                canny_threshold1, canny_threshold2 = 70.0, 140.0
     else:
         gray = image.copy()
 
@@ -44,6 +62,28 @@ def detect_candidate_lines(
 
     del filtered
     return [tuple(int(value) for value in line[0]) for line in detected]
+
+
+def detect_blue_bearing_lines(
+    image: np.ndarray,
+    *,
+    min_line_length: float = 60.0,
+    hough_threshold: int = 80,
+    **kwargs,
+) -> list[LineSegment]:
+    """Convenience wrapper tuned for blue bearing lines in game screenshots.
+
+    Applies blue HSV mask internally and uses slightly relaxed line length
+    defaults suitable for typical browser-rendered TMA plots.
+    All other params forwarded to detect_candidate_lines.
+    """
+    return detect_candidate_lines(
+        image,
+        blue_mask=True,
+        min_line_length=min_line_length,
+        hough_threshold=hough_threshold,
+        **kwargs,
+    )
 
 
 def reduce_lines(lines: Sequence[LineSegment]) -> list[LineSegment]:

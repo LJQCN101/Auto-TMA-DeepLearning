@@ -74,6 +74,61 @@ python -m auto_tma.predict --image-path XXX.jpg --visualization-path outputs/pre
 
 For image mode, use `--units-per-pixel` or a line-annotation JSON file when you can calibrate the image into real units.
 
+**Manual line labelling** (recommended when auto time-indexing is unreliable):
+- Use `--line-annotations-path` JSON (see `game_line_annotations_example.json` and `outputs/ann_*.json` for format). This lets you map `line_index` (shown in annotated output) to `observation_index` (0 = earliest) and choose `ownship_endpoint`.
+- Interactive prompt appears by default (shows numbered lines with A/B ends); enter obs index per line (negative to skip).
+- Combine with `--auto-sequential` for smart spatial (PCA) ordering of detected lines.
+
+**Manual lines from scratch (no auto detection)**:
+- `--draw-lines`: click pairs of points directly on the image to define bearing segments (then label as above).
+- `--lines-path foo.json` with `{"lines": [[x1,y1,x2,y2], ...]}` to provide exact pixel segments (bypasses OpenCV entirely; pair with annotation JSON or `--auto-sequential`).
+- These are especially useful for the game screenshots where line ordering matters for the transformer.
+
+### Game Screenshot Workflow (Deep Contact: Solution Trainer)
+
+Target use case: screenshots of blue bearing lines from the browser-based TMA trainer
+at https://ekix-games.itch.io/deep-contact-solution-trainer.
+
+1. In the browser, take a screenshot (or use element screenshot) focused on the tactical plot.
+2. (Strongly recommended) Crop tightly to the plot area to minimize UI elements, grids, and chrome.
+3. Run using the `torch270` env (recommended):
+
+```bash
+conda run -n torch270 python -m auto_tma.predict \
+  --image-path screenshot.png \
+  --blue \
+  --auto-sequential \
+  --units-per-pixel 4.0 \
+  --time-step-seconds 30 \
+  --visualization-path outputs/game_prediction.png \
+  --save-measurements-path outputs/recorded.json \
+  --no-show
+```
+
+Key flags for game screenshots:
+- `--blue`: enables HSV blue masking + tuned Hough defaults for blue bearing lines.
+- `--auto-sequential`: auto-maps detected lines to obs 0,1,... (ownship endpoint = "end"). Combined with `--save-measurements-path` this "records" the lines without prompts.
+- `--extract-lines-only`: skip the model entirely and just emit measurements/annotated image (great for calibration exploration or when <17 lines visible).
+- `--crop x,y,w,h` and `--min-line-length` / `--hough-threshold` for fine tuning.
+- `--units-per-pixel`: critical for calibration. The model was trained with position scale ~2600 and speeds in the 1.5-5 range. Choose a scale so that successive ownship deltas look realistic for the game's implied speeds and time step.
+
+Example line annotation JSON (for repeatable use instead of `--auto-sequential`):
+
+```json
+{
+  "time_step_seconds": 30,
+  "units_per_pixel": 3.5,
+  "lines": [
+    {"line_index": 0, "observation_index": 0, "ownship_endpoint": "end"},
+    {"line_index": 3, "observation_index": 1, "ownship_endpoint": "end"}
+  ]
+}
+```
+
+Use the saved `recorded.json` later with `--measurements-path`.
+
+Always cross-check the printed steady-course solution and the geometry plot. Adjust units-per-pixel if ranges/speeds look implausible.
+
 ## Model Notes
 The deep-learning model consumes continuous TMA features:
 `(normalized time, ownship x, ownship y, sin bearing, cos bearing, bearing delta)`.

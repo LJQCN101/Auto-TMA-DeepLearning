@@ -1,0 +1,12 @@
+{
+  "comment": "Example for --line-annotations-path when using game screenshots. Map specific detected line indices (after reduce) to observation slots. ownship_endpoint is usually 'end' for rays drawn outward from ownship positions in plots.",
+  "time_step_seconds": 30.0,
+  "units_per_pixel": 3.2,
+  "lines": [
+    {"line_index": 0, "observation_index": 0, "ownship_endpoint": "end"},
+    {"line_index": 1, "observation_index": 1, "ownship_endpoint": "end"},
+    {"line_index": 2, "observation_index": 2, "ownship_endpoint": "end"},
+    {"line_index": 5, "observation_index": 3, "ownship_endpoint": "end"},
+    {"line_index": 6, "observation_index": 4, "ownship_endpoint": "end"}
+  ]
+}

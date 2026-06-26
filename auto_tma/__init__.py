@@ -22,7 +22,7 @@ from .simulation import (
     simulate_bearing_measurements,
     simulate_bearing_measurements_from_track,
 )
-from .vision import detect_candidate_lines, reduce_lines
+from .vision import detect_blue_bearing_lines, detect_candidate_lines, reduce_lines
 
 __all__ = [
     "BearingMeasurement",
@@ -31,6 +31,7 @@ __all__ = [
     "RangeTransformerConfig",
     "build_range_inference_dataset",
     "decode_range_regression_dataset_sample",
+    "detect_blue_bearing_lines",
     "detect_candidate_lines",
     "generate_constant_velocity_track",
     "generate_range_regression_dataset",

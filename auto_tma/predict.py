@@ -21,7 +21,7 @@ from .deep_learning import (
 from .geometry import DEG_TO_RAD, bearing_between_points, prepare_measurements, speed_course_from_velocity
 from .models import BearingMeasurement
 from .steady_course import SteadyCourseSolution, predict_steady_course_track
-from .vision import detect_candidate_lines, reduce_lines
+from .vision import detect_blue_bearing_lines, detect_candidate_lines, reduce_lines
 
 LineSegment = tuple[int, int, int, int]
 
@@ -140,14 +140,61 @@ def main() -> None:
         action="store_true",
         help="Do not open an interactive matplotlib window",
     )
+    # Image / game screenshot specific
+    parser.add_argument(
+        "--blue",
+        action="store_true",
+        help="Enable blue color mask for bearing line detection (recommended for Deep Contact screenshots with blue LOBs)",
+    )
+    parser.add_argument(
+        "--min-line-length",
+        type=float,
+        default=None,
+        help="Hough minLineLength override (defaults 100, or ~60 when --blue)",
+    )
+    parser.add_argument(
+        "--hough-threshold",
+        type=int,
+        default=None,
+        help="Hough accumulator threshold override",
+    )
+    parser.add_argument(
+        "--auto-sequential",
+        action="store_true",
+        help="Auto-assign sequential obs indices (0..) to detected lines with ownship at 'end'. Enables non-interactive recording of blue lines.",
+    )
+    parser.add_argument(
+        "--crop",
+        type=str,
+        default=None,
+        help="Optional crop before detection as 'x,y,width,height' (top-left origin) for browser screenshots",
+    )
+    parser.add_argument(
+        "--extract-lines-only",
+        action="store_true",
+        help="Detect/annotate lines + save measurements (if --save-measurements-path) but skip checkpoint and neural prediction. Perfect for recording blue bearing lines.",
+    )
+    parser.add_argument(
+        "--draw-lines",
+        action="store_true",
+        help="Interactively draw bearing lines from scratch on the image (click two points per line) instead of automatic OpenCV detection. Use this when auto-detection is unreliable.",
+    )
+    parser.add_argument(
+        "--lines-path",
+        type=Path,
+        default=None,
+        help="Path to JSON file with manually provided line segments (bypasses auto detection). Format: {\"lines\": [[x1, y1, x2, y2], ...]} . Can be combined with --line-annotations-path for labelling.",
+    )
     args = parser.parse_args()
 
-    checkpoint_path = args.checkpoint_path or _default_checkpoint_path()
-    if checkpoint_path is None or not checkpoint_path.exists():
-        parser.error("no checkpoint was provided and no default trained checkpoint was found")
-
-    resolved_device = _resolve_device_name(args.device)
-    loaded = load_range_regressor_checkpoint(checkpoint_path, device=resolved_device)
+    extract_only = bool(args.extract_lines_only)
+    loaded = None
+    if not extract_only:
+        checkpoint_path = args.checkpoint_path or _default_checkpoint_path()
+        if checkpoint_path is None or not checkpoint_path.exists():
+            parser.error("no checkpoint was provided and no default trained checkpoint was found")
+        resolved_device = _resolve_device_name(args.device)
+        loaded = load_range_regressor_checkpoint(checkpoint_path, device=resolved_device)
 
     show_plots = not args.no_show
     if args.measurements_path is not None:
@@ -196,6 +243,8 @@ def main() -> None:
         return
 
     if args.interactive:
+        if loaded is None:
+            parser.error("--interactive requires a checkpoint (cannot use --extract-lines-only)")
         bundle, snapshot = _run_interactive_console(loaded, show_plots=show_plots)
         if args.save_measurements_path is not None:
             _save_measurement_bundle(bundle, args.save_measurements_path)
@@ -203,20 +252,121 @@ def main() -> None:
             _render_snapshot(snapshot, visualization_path=args.visualization_path, show=False, annotated_image=None)
         return
 
+    # --- Image path (bearing lines from screenshot, e.g. game blue lines) ---
     image = cv2.imread(str(args.image_path), cv2.IMREAD_COLOR)
     if image is None:
         parser.error(f"failed to read image: {args.image_path}")
-    reduced_lines = reduce_lines(detect_candidate_lines(image))
-    if not reduced_lines:
-        parser.error("no candidate bearing lines were detected in the image")
+
+    # Optional crop for browser screenshots (x,y,w,h top-left origin)
+    if args.crop:
+        try:
+            cx, cy, cw, ch = [int(v.strip()) for v in str(args.crop).split(",")]
+            image = image[cy : cy + ch, cx : cx + cw].copy()
+            if image.size == 0:
+                raise ValueError("empty crop")
+        except Exception as exc:
+            parser.error(f"invalid --crop '{args.crop}': {exc}. Use format x,y,width,height")
+
+    # Determine source of lines: manual JSON, interactive draw, or auto detection
+    if args.lines_path is not None:
+        payload = json.loads(args.lines_path.read_text(encoding="utf-8"))
+        manual_lines = [tuple(int(v) for v in seg) for seg in payload.get("lines", [])]
+        reduced_lines = manual_lines
+        if not reduced_lines:
+            parser.error(f"no lines found in {args.lines_path}")
+        if "units_per_pixel" in payload:
+            # allow lines json to supply default scale (overridable by --units-per-pixel later)
+            pass  # handled via normal flow + annotation overrides if present
+    elif args.draw_lines:
+        reduced_lines = _interactive_draw_lines(image)
+        if not reduced_lines:
+            parser.error("no lines were drawn")
+    else:
+        # Build detect kwargs for auto
+        detect_kwargs: dict = {}
+        if args.blue:
+            detect_kwargs["blue_mask"] = True
+            detect_kwargs.setdefault("min_line_length", args.min_line_length or 60.0)
+            detect_kwargs.setdefault("hough_threshold", args.hough_threshold or 80)
+        if args.min_line_length is not None:
+            detect_kwargs["min_line_length"] = args.min_line_length
+        if args.hough_threshold is not None:
+            detect_kwargs["hough_threshold"] = args.hough_threshold
+
+        reduced_lines = reduce_lines(detect_candidate_lines(image, **detect_kwargs))
+        if not reduced_lines:
+            parser.error("no candidate bearing lines were detected in the image")
 
     annotated_image = _annotate_image(image, reduced_lines)
-    line_annotations, annotation_overrides = _resolve_image_annotations(
-        reduced_lines,
-        args.line_annotations_path,
-        show_image=show_plots,
-        annotated_image=annotated_image,
-    )
+
+    # Auto sequential support for repeatable "record blue lines" without prompts
+    if args.auto_sequential and args.line_annotations_path is None:
+        # Improved auto for game screenshots (bearing-only TMA plots):
+        # 1. For each line, pick the ownship endpoint as the one closer to the median
+        #    of all candidate endpoints (prefers the clustered ownship side over the
+        #    far target direction).
+        # 2. Sort the chosen ownship points spatially along their principal direction
+        #    of travel (PCA). This follows the actual ownship track much better than
+        #    pure bearing sort.
+        # 3. Assign increasing observation indices in that track order.
+
+        candidates = []
+        for li, (x1, y1, x2, y2) in enumerate(reduced_lines):
+            # Both possible ownship locations
+            candidates.append((li, "start", np.array([x1, y1])))
+            candidates.append((li, "end", np.array([x2, y2])))
+
+        all_pts = np.array([c[2] for c in candidates])
+        if len(all_pts) > 0:
+            median_pt = np.median(all_pts, axis=0)
+        else:
+            median_pt = np.array([0., 0.])
+
+        # Pick the better end for each line (closer to median cluster)
+        per_line = {}
+        for li, ep, pt in candidates:
+            if li not in per_line:
+                per_line[li] = (ep, pt, 1e9)
+            dist = float(np.hypot(pt[0] - median_pt[0], pt[1] - median_pt[1]))
+            if dist < per_line[li][2]:
+                per_line[li] = (ep, pt, dist)
+
+        # Now sort the chosen ownship points along the main track direction
+        chosen = [(li, ep, pt) for li, (ep, pt, _) in per_line.items()]
+        pts = np.array([c[2] for c in chosen])
+        if len(pts) > 1:
+            centered = pts - pts.mean(axis=0)
+            try:
+                _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+                direction = Vt[0]
+                proj = centered @ direction
+                order = np.argsort(proj)
+            except Exception:
+                order = np.argsort(pts[:, 0])  # fallback to x
+        else:
+            order = np.arange(len(pts))
+
+        line_annotations = []
+        for rank, idx in enumerate(order):
+            li, ep, _ = chosen[idx]
+            line_annotations.append(
+                ImageLineAnnotation(
+                    line_index=li,
+                    observation_index=rank,
+                    time_seconds=None,
+                    ownship_endpoint=ep,
+                )
+            )
+        line_annotations = tuple(line_annotations)
+        annotation_overrides: dict[str, float] = {}
+    else:
+        line_annotations, annotation_overrides = _resolve_image_annotations(
+            reduced_lines,
+            args.line_annotations_path,
+            show_image=show_plots,
+            annotated_image=annotated_image,
+        )
+
     time_step_seconds = float(annotation_overrides.get("time_step_seconds", args.time_step_seconds))
     units_per_pixel = float(annotation_overrides.get("units_per_pixel", args.units_per_pixel))
     bundle = ObservationBundle(
@@ -232,6 +382,22 @@ def main() -> None:
     if args.save_measurements_path is not None:
         _save_measurement_bundle(bundle, args.save_measurements_path)
 
+    if extract_only:
+        print(f"extract-lines-only: recorded {len(bundle.measurements)} measurements from image (no model used)")
+        # Still render annotated image for verification if requested
+        if args.visualization_path is not None:
+            # Minimal annotated render without geometry
+            try:
+                import cv2 as _cv
+                _cv.imwrite(str(args.visualization_path), _cv.cvtColor(annotated_image, _cv.COLOR_RGB2BGR))
+                print(f"saved annotated image to {args.visualization_path}")
+            except Exception:
+                pass
+        return
+
+    # Normal prediction path
+    if loaded is None:
+        parser.error("prediction requires a checkpoint (use --extract-lines-only to skip)")
     snapshot = _predict_snapshot(bundle, loaded)
     if snapshot is None:
         parser.error(
@@ -255,6 +421,7 @@ def _resolve_device_name(device_name: str) -> str:
 def _default_checkpoint_path() -> Path | None:
     candidates = (
         Path("outputs/baseline_regression_large_2m.pt"),
+        Path("outputs/baseline_regression_large_2m_hard.pt"),
         Path("outputs/baseline_regression_large_2m_epoch_012.pt"),
         Path("outputs/kronos_regression_large_2m.pt"),
         Path("outputs/kronos_regression_large_2m_epoch_012.pt"),
@@ -405,6 +572,20 @@ def _resolve_image_annotations(
         if "units_per_pixel" in payload:
             overrides["units_per_pixel"] = float(payload["units_per_pixel"])
         annotations = tuple(_annotation_from_payload(item) for item in payload.get("lines", ()))
+        return annotations, overrides
+
+    if not show_image:
+        # Non-interactive fallback: treat lines in the order provided as sequential observations
+        # (user can still override with --line-annotations-path or --auto-sequential for smart ordering)
+        annotations = tuple(
+            ImageLineAnnotation(
+                line_index=i,
+                observation_index=i,
+                time_seconds=None,
+                ownship_endpoint="end",
+            )
+            for i in range(len(lines))
+        )
         return annotations, overrides
 
     if show_image:
@@ -797,6 +978,65 @@ def _finalize_figure(figure) -> None:
     plt.ioff()
     figure.canvas.draw_idle()
     plt.show()
+
+
+def _interactive_draw_lines(image: np.ndarray) -> list[LineSegment]:
+    """Interactively draw bearing lines on the image by clicking pairs of points.
+
+    Each line is defined by two clicks (e.g. ownship position then a point along the bearing).
+    Lines are shown live. Close the figure or press Enter/q to finish.
+    Returns list of (x1,y1,x2,y2) pixel segments.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.backend_bases import MouseEvent
+
+    fig, ax = plt.subplots(1, 1, figsize=(11, 8))
+    if image.ndim == 3:
+        display_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    else:
+        display_img = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    ax.imshow(display_img)
+    ax.set_title(
+        "Manual line drawing mode\n"
+        "Click two points per bearing line (order doesn't matter for geometry).\n"
+        "Lines will be numbered for later labelling. Close window or press 'enter'/'q' when done."
+    )
+
+    drawn_lines: list[LineSegment] = []
+    click_buffer: list[tuple[float, float]] = []
+
+    def on_click(event: MouseEvent) -> None:
+        if event.inaxes != ax or event.xdata is None or event.ydata is None:
+            return
+        click_buffer.append((event.xdata, event.ydata))
+        color = "lime" if len(click_buffer) == 1 else "red"
+        ax.plot(event.xdata, event.ydata, marker="o", color=color, markersize=5)
+        if len(click_buffer) == 2:
+            (x1, y1), (x2, y2) = click_buffer
+            ax.plot([x1, x2], [y1, y2], color="cyan", lw=1.2)
+            xi1, yi1 = int(round(x1)), int(round(y1))
+            xi2, yi2 = int(round(x2)), int(round(y2))
+            drawn_lines.append((xi1, yi1, xi2, yi2))
+            mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
+            ax.text(mid_x, mid_y, str(len(drawn_lines) - 1), color="yellow", fontsize=9,
+                    ha="center", va="center", fontweight="bold",
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="black", alpha=0.6))
+            click_buffer.clear()
+            print(f"  Added line {len(drawn_lines)-1}: ({xi1},{yi1}) - ({xi2},{yi2})")
+        fig.canvas.draw_idle()
+
+    def on_key(event) -> None:
+        if event.key in ("enter", "q", "escape"):
+            plt.close(fig)
+
+    fig.canvas.mpl_connect("button_press_event", on_click)
+    fig.canvas.mpl_connect("key_press_event", on_key)
+
+    print("Click pairs of points to draw lines. The lines are numbered for manual labelling.")
+    print("Press Enter, q, or close the window when finished.")
+    plt.show(block=True)
+
+    return drawn_lines
 
 
 def _annotate_image(image: np.ndarray, lines: Sequence[LineSegment]) -> np.ndarray:
